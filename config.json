@@ -1,0 +1,27 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "log_level": "INFO"
+  },
+  "local_llm": {
+    "host": "10.101.96.71",
+    "port": 8001,
+    "timeout": 30.0
+  },
+  "database": {
+    "host": "/tmp",
+    "port": 5432,
+    "name": "ragdb",
+    "pool_min": 2,
+    "pool_max": 10,
+    "auto_connect": true
+  },
+  "llm_api": {
+    "default_models": {
+      "claude": "claude-sonnet-5-0",
+      "gpt": "gpt-5.5",
+      "gemini": "gemini-3.5-flash"
+    }
+  }
+}

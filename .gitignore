@@ -1,0 +1,39 @@
+# 가상환경
+.venv/
+venv/
+env/
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# 환경변수
+.env
+.env.*
+
+# VS Code
+.vscode/
+
+# 배포/빌드
+dist/
+build/
+*.egg-info/
+*.egg
+
+# 테스트 캐시
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 로그
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# personal config files
+.claude/
