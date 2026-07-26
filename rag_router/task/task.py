@@ -6,7 +6,7 @@ interface/task_interface.py 의 TaskInterface를 상속받아 실제 큐에 오�
 """
 from typing import Any, Optional
 
-from interface.task_interface import TaskInterface
+from rag_router.interface.task_interface import TaskInterface
 
 
 class Task(TaskInterface):

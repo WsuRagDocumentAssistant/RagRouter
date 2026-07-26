@@ -6,7 +6,7 @@ interface/task_result_interface.py 의 TaskResultInterface를 상속받아 실�
 """
 from typing import Any, Optional
 
-from interface.task_result_interface import TaskResultInterface
+from rag_router.interface.task_result_interface import TaskResultInterface
 
 
 class TaskResult(TaskResultInterface):

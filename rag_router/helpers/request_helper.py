@@ -8,10 +8,10 @@ import uuid
 import asyncio
 from typing import Optional
 
-from task.task import Task
-from task.task_result import TaskResult
-from dto.task_request import TaskRequest
-from result_dispatcher import ResultDispatcher
+from rag_router.task.task import Task
+from rag_router.task.task_result import TaskResult
+from rag_router.dto.task_request import TaskRequest
+from rag_router.result_dispatcher import ResultDispatcher
 
 
 class RequestHandler:

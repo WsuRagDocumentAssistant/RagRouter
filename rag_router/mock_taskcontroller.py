@@ -12,8 +12,8 @@ shared_queues.SharedQueues가 실제로 같은 큐 객체를 공유한다.
 """
 import queue as queue_module
 
-from task.task_result import TaskResult
-from shared_queues import SharedQueues
+from rag_router.task.task_result import TaskResult
+from rag_router.shared_queues import SharedQueues
 
 
 class MockTaskController:

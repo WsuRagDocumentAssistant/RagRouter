@@ -20,14 +20,14 @@ load_dotenv()
 import uvicorn
 from fastapi import FastAPI
 
-from dto.task_request import TaskRequest
-from dto.task_response import TaskResponse
-from helpers.config_helper import ConfigHelper
-from helpers.log_helper import LogHelper
-from helpers.request_helper import RequestHandler
-from helpers.response_helper import ResponseHandler
-from result_dispatcher import ResultDispatcher
-from shared_queues import SharedQueues
+from rag_router.dto.task_request import TaskRequest
+from rag_router.dto.task_response import TaskResponse
+from rag_router.helpers.config_helper import ConfigHelper
+from rag_router.helpers.log_helper import LogHelper
+from rag_router.helpers.request_helper import RequestHandler
+from rag_router.helpers.response_helper import ResponseHandler
+from rag_router.result_dispatcher import ResultDispatcher
+from rag_router.shared_queues import SharedQueues
 
 config = ConfigHelper().load()
 
@@ -48,7 +48,7 @@ class Gateway:
         self._register_routes()
 
     def run(self) -> None:
-        """python gateway.py로 직접 실행할 때 사용. config.json의 server.host/port를 따른다."""
+        """rag-router 콘솔 스크립트/직접 실행에서 사용. config.json의 server.host/port를 따른다."""
         uvicorn.run(self.app, host=self.host, port=self.port)
 
     @asynccontextmanager
@@ -84,7 +84,13 @@ class Gateway:
 
 
 gateway = Gateway()
-app = gateway.app  # uvicorn gateway:app 이 참조하는 이름. 모듈 최상위에 있어야 하는 FastAPI 요구사항.
+app = gateway.app  # uvicorn rag_router.gateway:app 이 참조하는 이름. 모듈 최상위에 있어야 하는 FastAPI 요구사항.
+
+
+def main() -> None:
+    """pyproject.toml의 [project.scripts] rag-router 엔트리 포인트."""
+    gateway.run()
+
 
 if __name__ == "__main__":
-    gateway.run()
+    main()

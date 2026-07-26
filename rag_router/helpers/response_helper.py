@@ -6,8 +6,8 @@
 """
 from typing import Optional
 
-from task.task_result import TaskResult
-from dto.task_response import TaskResponse
+from rag_router.task.task_result import TaskResult
+from rag_router.dto.task_response import TaskResponse
 
 
 class ResponseHandler:

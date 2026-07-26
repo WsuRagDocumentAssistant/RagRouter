@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-router"
+version = "0.1.0"
+description = "RAG 시스템의 통신부(Gateway) - FastAPI 기반 작업 라우팅 서버"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi==0.140.0",
+    "uvicorn==0.51.0",
+    "pydantic==2.13.4",
+    "python-dotenv==1.2.2",
+]
+
+[project.scripts]
+rag-router = "rag_router.gateway:main"
+
+[tool.setuptools.packages.find]
+include = ["rag_router*"]
+
+[tool.setuptools.package-data]
+rag_router = ["config.json"]
