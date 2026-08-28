@@ -11,4 +11,4 @@ from pydantic import BaseModel
 class TaskRequest(BaseModel):
     task_type: str
     session_id: Optional[str] = None
-    payload: dict[str, Any]
+    payload: dict[str, Any] = {}

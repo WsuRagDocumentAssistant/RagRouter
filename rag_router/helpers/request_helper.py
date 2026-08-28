@@ -26,14 +26,23 @@ class RequestHandler:
         self._task_queue = task_queue
         self._dispatcher = dispatcher
 
-    async def submit(self, req: TaskRequest, timeout_sec: float) -> tuple[str, Optional[TaskResult], bool]:
+    async def submit(
+        self, req: TaskRequest, timeout_sec: float, token: Optional[str] = None
+    ) -> tuple[str, Optional[TaskResult], bool]:
         """
         TaskRequest를 Task로 변환해 큐에 넣고, 결과가 도착할 때까지 대기한다.
+        token은 HTTP Authorization 헤더에서 추출되어 별도로 전달된다 (body의 일부가 아님).
 
         반환값: (job_id, result 또는 None(타임아웃 시), timed_out 여부)
         """
         job_id = str(uuid.uuid4())
-        task = Task(job_id=job_id, task_type=req.task_type, session_id=req.session_id, payload=req.payload)
+        task = Task(
+            job_id=job_id,
+            task_type=req.task_type,
+            session_id=req.session_id,
+            payload=req.payload,
+            token=token,
+        )
 
         future = self._dispatcher.register(job_id)
         self._task_queue.put(task)

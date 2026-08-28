@@ -12,13 +12,21 @@ from rag_router.interface.task_interface import TaskInterface
 class Task(TaskInterface):
     """통신부 -> TaskController 로 넘어가는 요청 단위"""
 
-    __slots__ = ("_job_id", "_task_type", "_session_id", "_payload")
+    __slots__ = ("_job_id", "_task_type", "_session_id", "_payload", "_token")
 
-    def __init__(self, job_id: str, task_type: str, session_id: Optional[str], payload: dict[str, Any]):
+    def __init__(
+        self,
+        job_id: str,
+        task_type: str,
+        session_id: Optional[str],
+        payload: dict[str, Any],
+        token: Optional[str] = None,
+    ):
         self._job_id = job_id
         self._task_type = task_type
         self._session_id = session_id
         self._payload = payload
+        self._token = token
 
     @property
     def job_id(self) -> str:
@@ -35,3 +43,8 @@ class Task(TaskInterface):
     @property
     def payload(self) -> dict[str, Any]:
         return self._payload
+
+    @property
+    def token(self) -> Optional[str]:
+        """Authorization: Bearer <token> 헤더에서 추출된 값. 헤더가 없으면 None."""
+        return self._token

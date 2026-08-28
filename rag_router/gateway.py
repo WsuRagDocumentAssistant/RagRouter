@@ -12,13 +12,15 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
+from fastapi.middleware.cors import CORSMiddleware
 
 from rag_router.dto.task_request import TaskRequest
 from rag_router.dto.task_response import TaskResponse
@@ -45,7 +47,17 @@ class Gateway:
         self.request_handler = RequestHandler()
         self.response_handler = ResponseHandler()
         self.app = FastAPI(title="통신부 (Gateway)", lifespan=self._lifespan)
+        self._register_cors()
         self._register_routes()
+
+    def _register_cors(self) -> None:
+        allowed_origins = config.get("cors", "allowed_origins", default=["https://rag.wsu.ac.kr"])
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     def run(self) -> None:
         """rag-router 콘솔 스크립트/직접 실행에서 사용. config.json의 server.host/port를 따른다."""
@@ -69,8 +81,12 @@ class Gateway:
         self.request_handler.configure(task_queue, dispatcher)
         logger.info("공유 큐 연결 완료")
 
-    async def receive(self, req: TaskRequest) -> TaskResponse:
-        job_id, result, timed_out = await self.request_handler.submit(req, self.TIMEOUT_SEC)
+    async def receive(self, req: TaskRequest, authorization: Optional[str] = Header(None)) -> TaskResponse:
+        token = None
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization[len("bearer "):].strip()
+
+        job_id, result, timed_out = await self.request_handler.submit(req, self.TIMEOUT_SEC, token=token)
         response = self.response_handler.build(req.task_type, result, timed_out, self.TIMEOUT_SEC)
 
         if response.status == "success":

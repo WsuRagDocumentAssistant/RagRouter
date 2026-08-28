@@ -24,3 +24,7 @@ class TaskInterface(ABC):
     @property
     @abstractmethod
     def payload(self) -> dict[str, Any]: ...
+
+    @property
+    @abstractmethod
+    def token(self) -> Optional[str]: ...

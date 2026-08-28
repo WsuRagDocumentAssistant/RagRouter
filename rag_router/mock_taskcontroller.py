@@ -45,7 +45,11 @@ class MockTaskController:
         return TaskResult(
             job_id=task.job_id,
             success=True,
-            data={"echo": task.payload, "handled_by": "mock_taskcontroller"},
+            data={
+                "echo": task.payload,
+                "handled_by": "mock_taskcontroller",
+                "token_received": task.token is not None,
+            },
         )
 
 

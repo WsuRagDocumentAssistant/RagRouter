@@ -124,6 +124,11 @@ uvicorn rag_router.gateway:app --host 0.0.0.0 --port 8000
 }
 ```
 
+`payload`는 생략하면 `{}`로 처리됩니다 (`USER_LIST`처럼 payload가 필요 없는 task_type용).
+
+인증이 필요한 요청은 `Authorization: Bearer <token>` 헤더로 토큰을 실어 보냅니다. Gateway는 이 헤더를
+파싱해서 `Task.token`으로 TaskController에 전달합니다 — body의 `payload`에는 토큰을 넣지 않습니다.
+
 응답:
 
 ```json
@@ -136,6 +141,12 @@ uvicorn rag_router.gateway:app --host 0.0.0.0 --port 8000
 ```
 
 `status`는 `success` / `error` / `timeout` 중 하나이며, 타임아웃은 `Gateway.TIMEOUT_SEC`(기본 60초)으로 제어됩니다.
+
+### CORS
+
+`config.json`의 `cors.allowed_origins`에 등록된 origin만 브라우저에서 호출할 수 있습니다
+(기본값: Vite 개발 서버 `http://localhost:5173` / `http://127.0.0.1:5173`). 다른 origin(운영 도메인,
+Cloudflare 터널 등)에서 붙여야 하면 이 목록에 추가해야 합니다.
 
 ## 설정 우선순위
 
@@ -170,5 +181,6 @@ TaskController는 별도 저장소(레포)에서 개발될 예정이며, 나중�
 ## TODO
 
 - [ ] 실제 TaskController 저장소와 Gateway를 함께 띄우는 연결 스크립트
-- [ ] `mock_taskcontroller.py` → 실제 TaskController로 교체
+- [ ] `mock_taskcontroller.py` → 실제 TaskController로 교체 — 그 안에서 `task.token`을 검증하고
+      `role` 기반 권한 체크(관리자 전용 API 등)를 하는 건 TaskController의 책임
 - [ ] `.env`를 이용한 비밀값(LLM API 키, DB 비밀번호 등) 관리
