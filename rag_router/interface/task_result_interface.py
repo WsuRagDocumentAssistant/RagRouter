@@ -23,7 +23,7 @@ class TaskResultInterface(ABC):
 
     @property
     @abstractmethod
-    def data(self) -> Optional[dict[str, Any]]: ...
+    def data(self) -> Optional[dict[str, Any] | list[Any]]: ...
 
     @property
     @abstractmethod

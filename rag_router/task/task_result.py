@@ -14,7 +14,13 @@ class TaskResult(TaskResultInterface):
 
     __slots__ = ("_job_id", "_success", "_data", "_error")
 
-    def __init__(self, job_id: str, success: bool, data: Optional[dict[str, Any]] = None, error: Optional[str] = None):
+    def __init__(
+        self,
+        job_id: str,
+        success: bool,
+        data: Optional[dict[str, Any] | list[Any]] = None,
+        error: Optional[str] = None,
+    ):
         self._job_id = job_id
         self._success = success
         self._data = data
@@ -29,7 +35,7 @@ class TaskResult(TaskResultInterface):
         return self._success
 
     @property
-    def data(self) -> Optional[dict[str, Any]]:
+    def data(self) -> Optional[dict[str, Any] | list[Any]]:
         return self._data
 
     @property
