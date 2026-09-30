@@ -72,7 +72,7 @@ class Gateway:
         self.app.add_api_route("/api/task", self.receive, methods=["POST"], response_model=TaskResponse)
 
     async def on_startup(self) -> None:
-        # TaskController와 같은 프로세스 안에서 공유되는 큐를 가져온다.
+        # 연결 스크립트 안에서 TaskController와 공유되는 큐를 가져온다.
         task_queue, result_queue = SharedQueues.get_queues()
 
         dispatcher = ResultDispatcher(result_queue)

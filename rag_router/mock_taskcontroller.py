@@ -7,8 +7,9 @@ TaskController/TaskExecutor는 다른 저장소(모듈)로 분리되어 개발�
 task_queue에서 Task를 꺼내 그대로 echo 형태로 result_queue에 넣어준다.
 실제 TaskController는 이 자리에서 task_type을 보고 분기 후 실제 로직을 실행하면 된다.
 
-[중요] 이 목업은 gateway.py와 같은 프로세스 안에서 실행되어야
-shared_queues.SharedQueues가 실제로 같은 큐 객체를 공유한다.
+[중요] 이 목업은 gateway.py와 같은 연결 스크립트 안에서(스레드, 또는 리눅스에서
+gateway.run() 전에 start()한 multiprocessing.Process로) 실행되어야
+shared_queues.SharedQueues의 큐를 공유한다.
 """
 import queue as queue_module
 

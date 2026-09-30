@@ -56,7 +56,7 @@ RAG_Router/
     ├── __init__.py
     ├── gateway.py                 # 진입점. FastAPI 앱, 라우팅, 시작 시 큐 연결, main()
     ├── mock_taskcontroller.py     # [테스트 전용] TaskController를 흉내내는 echo 목업
-    ├── shared_queues.py           # 같은 프로세스 안에서 공유되는 task_queue/result_queue
+    ├── shared_queues.py           # 연결 스크립트 안에서 공유되는 task_queue/result_queue (multiprocessing.Queue)
     ├── result_dispatcher.py       # result_queue를 감시해 job_id로 응답을 매칭하는 백그라운드 디스패처
     ├── config.json                # 구조적 기본값 (server.host/port/log_level)
     │
@@ -157,18 +157,32 @@ Cloudflare 터널 등)에서 붙여야 하면 이 목록에 추가해야 합니�
 
 현재는 `.env` 파일이 없어서 전부 `config.json` 값을 그대로 사용합니다.
 
-## ⚠️ 현재 구조의 제약: 같은 프로세스여야 함
+## ⚠️ 현재 구조의 제약: 연결 스크립트 하나에서 띄워야 함
 
-`shared_queues.py`는 `queue.Queue()`를 모듈 레벨에 두고 import로 공유하는 방식입니다.
-이 방식은 **Gateway와 TaskController가 같은 파이썬 프로세스 안에서 함께 떠 있을 때만** 동작합니다.
-서로 다른 터미널에서 각각 실행하면 프로세스가 분리되어 큐가 공유되지 않고, 요청이 응답을
-받지 못한 채 타임아웃됩니다.
+`shared_queues.py`는 `multiprocessing.Queue()`를 모듈 레벨에 두고 공유하는 방식입니다.
+큐가 공유되려면 **연결 스크립트 하나가 부모가 되어** Gateway와 TaskController를 함께 띄워야 합니다.
 
-TaskController는 별도 저장소(레포)에서 개발될 예정이며, 나중에 Gateway와 TaskController를
-같은 프로세스 안에서 함께 import해서 띄우는 **연결 스크립트**가 추가될 예정입니다.
-그 전까지 두 모듈을 동시에 검증하려면, 하나의 파이썬 스크립트 안에서 `rag_router.gateway`의
-`Gateway`와 `rag_router.mock_taskcontroller`의 `MockTaskController`를 함께 띄워야 합니다
-(`MockTaskController().run()`을 백그라운드 스레드로 실행).
+- 같은 프로세스(스레드)로 띄우는 경우: OS와 무관하게 동작
+- TaskController를 `multiprocessing.Process`로 띄우는 경우: **리눅스(fork 방식)에서만** 모듈 레벨 큐가
+  자식에게 상속됩니다. Windows(spawn 방식)에서는 자식이 모듈을 새로 import해서 별도 큐를 갖게 되므로
+  공유되지 않습니다.
+- 서로 다른 터미널에서 각각 실행하면 OS와 무관하게 큐가 공유되지 않고, 요청이 타임아웃됩니다.
+
+자식 프로세스는 반드시 `gateway.run()`보다 **먼저** `start()`해야 합니다. `gateway.run()`이 뜬 뒤에는
+이벤트 루프와 `ResultDispatcher` 스레드가 돌고 있어서, 그 상태로 fork하면 데드락 위험이 있습니다.
+
+```python
+import multiprocessing
+from rag_router.gateway import gateway
+from rag_router.mock_taskcontroller import MockTaskController
+
+p = multiprocessing.Process(target=MockTaskController().run, daemon=True)
+p.start()        # 먼저 fork
+gateway.run()    # 그다음 서버 기동
+```
+
+리눅스 기본 start method가 fork인 건 Python 3.13까지입니다(3.14부터 변경). `pyproject.toml`에서
+`>=3.11,<3.12`로 고정되어 있어 현재는 문제 없습니다.
 
 ## 공개 배포 전 체크리스트
 
