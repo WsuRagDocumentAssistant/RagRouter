@@ -1,14 +1,17 @@
 """
 공유 큐.
 
-통신부(gateway.py)와 TaskController는 각자 다른 저장소(모듈)로 분리되어
-있지만, 최종적으로는 둘을 import해서 엮어주는 "연결" 스크립트 하나가
-함께 띄우는 구조로 확정되었다.
+설계상 통신 흐름은 다음과 같다.
 
-multiprocessing.Queue를 사용하므로, 같은 프로세스 안에서는 물론이고
-연결 스크립트가 multiprocessing.Process로 띄운 자식 프로세스와도 큐가 공유된다.
-단, 리눅스(fork 방식)에서만 모듈 레벨 큐가 자식에게 그대로 상속되며,
-자식 프로세스는 gateway.run()보다 먼저 start()해야 한다.
+    Client → Router → TaskController → TaskExecutor → 결과 큐 → Router
+
+Router가 넣는 큐(task_queue)는 TaskController의 입력 큐이고, Router가 꺼내는
+큐(result_queue)는 TaskExecutor의 결과 큐다. 연결 스크립트는 bind()로 두 큐를
+직접 꽂아준다 — 그 사이를 이어주는 별도 큐나 중계 스레드를 두지 않는다.
+
+bind()를 부르지 않으면 모듈 레벨 기본 큐를 쓴다(mock_taskcontroller 등 단독 실행용).
+기본 큐는 multiprocessing.Queue라 같은 프로세스 안에서는 물론, 리눅스(fork 방식)에서
+gateway.run()보다 먼저 start()한 자식 프로세스와도 공유된다.
 """
 from multiprocessing import Queue
 
@@ -16,6 +19,11 @@ from multiprocessing import Queue
 class SharedQueues:
     _task_queue: Queue = Queue()
     _result_queue: Queue = Queue()
+
+    @classmethod
+    def bind(cls, task_queue, result_queue) -> None:
+        """TaskController 입력 큐와 TaskExecutor 결과 큐를 꽂는다. gateway.run() 전에 불러야 한다."""
+        cls._task_queue, cls._result_queue = task_queue, result_queue
 
     @classmethod
     def get_queues(cls):

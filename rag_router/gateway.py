@@ -4,6 +4,10 @@
 1. 요청이 들어오면, RequestHandler로 Task를 만들어 task_queue에 넣고 결과를 기다린다.
 2. 결과(또는 타임아웃)가 정해지면, ResponseHandler로 TaskResponse를 만들어 응답한다.
 
+통로는 두 가지이고 처리는 같다.
+- WebSocket /api/ws : 기본 통로. 연결 하나로 여러 요청을 동시에 보내고, 응답은 끝나는 순서대로 온다.
+- HTTP POST /api/task : 기존 클라이언트·디버깅(curl)용으로 남겨둔다.
+
 .env 로딩, config.json 로딩, 로깅 설정은 여기(모듈 최상위)에서 1회만 수행한다.
 - config.json: 구조적 기본값 (host/port/log_level 등)
 - .env(os.environ): 비밀값/환경별 값. 있으면 config.json보다 우선한다.
@@ -19,16 +23,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import uvicorn
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 
 from rag_router.dto.task_request import TaskRequest
 from rag_router.dto.task_response import TaskResponse
+from rag_router.dto.ws_message import WsRequest, WsResponse
 from rag_router.helpers.config_helper import ConfigHelper
 from rag_router.helpers.log_helper import LogHelper
-from rag_router.helpers.request_helper import RequestHandler
+from rag_router.helpers.request_helper import Encode, RequestHandler
 from rag_router.helpers.response_helper import ResponseHandler
-from rag_router.result_dispatcher import ResultDispatcher
+from rag_router.result_dispatcher import Decode, ResultDispatcher
 from rag_router.shared_queues import SharedQueues
 
 config = ConfigHelper().load()
@@ -37,12 +43,23 @@ LogHelper.setup_logging(os.environ.get("LOG_LEVEL") or config.get("server", "log
 logger = logging.getLogger("gateway")
 
 
+def _bearer(authorization: Optional[str]) -> Optional[str]:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[len("bearer "):].strip()
+    return None
+
+
 class Gateway:
     TIMEOUT_SEC = 60.0  # 전체 task_type 공통 타임아웃
 
     def __init__(self):
         self.host = os.environ.get("HOST") or config.get("server", "host", default="0.0.0.0")
         self.port = int(os.environ.get("PORT") or config.get("server", "port", default=8000))
+        # 파일 업로드가 base64로 메시지 하나에 실려 오므로 uvicorn 기본값(16MB)보다 크게 둔다.
+        self.ws_max_size = int(config.get("server", "ws_max_size", default=16 * 1024 * 1024))
+
+        self._encode: Optional[Encode] = None
+        self._decode: Optional[Decode] = None
 
         self.request_handler = RequestHandler()
         self.response_handler = ResponseHandler()
@@ -59,9 +76,20 @@ class Gateway:
             allow_headers=["*"],
         )
 
+    def connect(
+        self, task_queue, result_queue, *, encode: Optional[Encode] = None, decode: Optional[Decode] = None
+    ) -> None:
+        """
+        TaskController 입력 큐와 TaskExecutor 결과 큐를 직접 연결한다. run() 전에 불러야 한다.
+        - encode: Task -> task_queue에 넣을 값. ValueError면 큐에 넣지 않고 바로 실패 응답
+        - decode: result_queue에서 꺼낸 값 -> TaskResult. None이면 버린다
+        """
+        SharedQueues.bind(task_queue, result_queue)
+        self._encode, self._decode = encode, decode
+
     def run(self) -> None:
         """rag-router 콘솔 스크립트/직접 실행에서 사용. config.json의 server.host/port를 따른다."""
-        uvicorn.run(self.app, host=self.host, port=self.port)
+        uvicorn.run(self.app, host=self.host, port=self.port, ws_max_size=self.ws_max_size)
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI):
@@ -70,22 +98,18 @@ class Gateway:
 
     def _register_routes(self) -> None:
         self.app.add_api_route("/api/task", self.receive, methods=["POST"], response_model=TaskResponse)
+        self.app.add_api_websocket_route("/api/ws", self.stream)
 
     async def on_startup(self) -> None:
-        # 연결 스크립트 안에서 TaskController와 공유되는 큐를 가져온다.
         task_queue, result_queue = SharedQueues.get_queues()
 
-        dispatcher = ResultDispatcher(result_queue)
-        dispatcher.start(asyncio.get_event_loop())
+        dispatcher = ResultDispatcher(result_queue, self._decode)
+        dispatcher.start(asyncio.get_running_loop())
 
-        self.request_handler.configure(task_queue, dispatcher)
-        logger.info("공유 큐 연결 완료")
+        self.request_handler.configure(task_queue, dispatcher, self._encode)
+        logger.info("큐 연결 완료")
 
-    async def receive(self, req: TaskRequest, authorization: Optional[str] = Header(None)) -> TaskResponse:
-        token = None
-        if authorization and authorization.lower().startswith("bearer "):
-            token = authorization[len("bearer "):].strip()
-
+    async def _process(self, req: TaskRequest, token: Optional[str]) -> TaskResponse:
         job_id, result, timed_out = await self.request_handler.submit(req, self.TIMEOUT_SEC, token=token)
         response = self.response_handler.build(req.task_type, result, timed_out, self.TIMEOUT_SEC)
 
@@ -97,6 +121,43 @@ class Gateway:
                 job_id, req.task_type, response.status, response.error_message,
             )
         return response
+
+    async def receive(self, req: TaskRequest, authorization: Optional[str] = Header(None)) -> TaskResponse:
+        return await self._process(req, _bearer(authorization))
+
+    async def stream(self, ws: WebSocket) -> None:
+        """
+        메시지 하나가 요청 하나다. 요청마다 작업을 따로 띄워서, 오래 걸리는 질의가 뒤의 요청을
+        막지 않는다. 연결이 끊기면 아직 기다리던 요청은 취소한다(결과는 dispatcher가 버린다).
+        """
+        await ws.accept()
+        send_lock = asyncio.Lock()   # 여러 작업이 동시에 보내도 프레임이 섞이지 않게
+        running: set[asyncio.Task] = set()
+
+        async def send(response: WsResponse) -> None:
+            async with send_lock:
+                await ws.send_text(response.model_dump_json())
+
+        async def reply(req: WsRequest) -> None:
+            response = await self._process(req, req.token)
+            await send(WsResponse(id=req.id, **response.model_dump()))
+
+        try:
+            while True:
+                text = await ws.receive_text()
+                try:
+                    req = WsRequest.model_validate_json(text)
+                except ValidationError as e:
+                    await send(WsResponse(task_type="", status="error", error_message=f"잘못된 요청 형식입니다: {e.errors()[0]['msg']}"))
+                    continue
+                job = asyncio.create_task(reply(req))
+                running.add(job)
+                job.add_done_callback(running.discard)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            for job in running:
+                job.cancel()
 
 
 gateway = Gateway()

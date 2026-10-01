@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn==0.51.0",
     "pydantic==2.13.4",
     "python-dotenv==1.2.2",
+    "websockets==17.1",
 ]
 
 [project.scripts]

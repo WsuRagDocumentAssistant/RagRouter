@@ -5,37 +5,49 @@ RAG 시스템 전체 아키텍처 중 **통신부(Communication Layer)** 만 구
 
 - Python 3.11
 - FastAPI + uvicorn
-- 단일 API 엔드포인트, JSON body 안의 `task_type` 필드로 작업 구분
+- WebSocket `/api/ws` (기본 통로) + HTTP `POST /api/task` (기존 클라이언트·디버깅용), JSON 안의 `task_type` 필드로 작업 구분
 
 ## 요청 흐름
 
+설계(Client → Router → TaskController → TaskExecutor → 결과 큐 → Router)를 그대로 따릅니다.
+Router가 넣는 큐는 **TaskController의 입력 큐**, 꺼내는 큐는 **TaskExecutor의 결과 큐**이며,
+그 사이를 잇는 중계 큐·스레드는 없습니다.
+
 ```
 Client
-  │  POST /api/task  { task_type, session_id, payload }
+  │  WebSocket /api/ws  { id, task_type, session_id, payload, token }
   ▼
 Gateway (rag_router/gateway.py, FastAPI)
-  │  RequestHandler.submit() → Task 생성 → task_queue.put(task)
+  │  RequestHandler.submit() → Task 생성 → encode(task) → task_queue.put(...)
   ▼
-task_queue  ─────────────────────────────────┐
-                                              │  (SharedQueues로 공유되는 큐)
-                                              ▼
-                                        TaskController
-                                     (다른 저장소에서 개발 예정,
-                                      지금은 mock_taskcontroller.py로 대체)
-                                              │
-                                              │  처리 후 TaskResult 생성
-                                              ▼
-result_queue ◄────────────────────────────────┘
+task_queue = TaskController 입력 큐
+  ▼
+TaskController ──► TaskExecutor (작업 실행)
+                        │
+                        ▼
+result_queue = TaskExecutor 결과 큐
   │
   ▼
 ResultDispatcher (백그라운드 스레드)
-  │  result_queue를 감시하다 job_id로 asyncio.Future를 resolve
+  │  decode(item) → TaskResult, job_id로 asyncio.Future를 resolve
   ▼
 ResponseHandler.build() → TaskResponse
   │
   ▼
-Client ← HTTP 응답
+Client ← { id, task_type, status, result, error_message }
 ```
+
+큐에 오가는 모양은 연결 스크립트가 `gateway.connect()`로 정합니다.
+
+```python
+gateway.connect(controller.task_queue, executor.result_queue,
+                encode=to_controller,    # Task -> TaskController가 읽는 값 (ValueError면 바로 error 응답)
+                decode=from_executor)    # TaskExecutor 결과 -> TaskResult (None이면 버림)
+gateway.run()
+```
+
+`connect()`를 부르지 않으면 `SharedQueues`의 기본 큐를 쓰고 Task/TaskResult를 그대로 주고받습니다
+(`mock_taskcontroller.py`로 단독 검증할 때).
 
 Gateway는 `task_type`의 의미를 전혀 모릅니다. 그저 식별자로 보고 실어 나를 뿐이며,
 실제 분기/처리 로직은 TaskController(별도 저장소)의 책임입니다.
@@ -60,9 +72,10 @@ RAG_Router/
     ├── result_dispatcher.py       # result_queue를 감시해 job_id로 응답을 매칭하는 백그라운드 디스패처
     ├── config.json                # 구조적 기본값 (server.host/port/log_level)
     │
-    ├── dto/                       # 통신부의 HTTP 요청/응답 바디 (pydantic)
+    ├── dto/                       # 통신부의 HTTP/WebSocket 요청/응답 바디 (pydantic)
     │   ├── task_request.py        #   TaskRequest
-    │   └── task_response.py       #   TaskResponse
+    │   ├── task_response.py       #   TaskResponse
+    │   └── ws_message.py          #   WsRequest / WsResponse (위 둘 + id, token)
     │
     ├── task/                      # 큐에 실제로 오가는 내부 데이터 모델
     │   ├── task.py                #   Task (TaskInterface 구현체)
@@ -114,7 +127,25 @@ uvicorn rag_router.gateway:app --host 0.0.0.0 --port 8000
 
 ### API
 
-**POST `/api/task`**
+**WebSocket `/api/ws`** (기본 통로)
+
+연결 하나로 여러 요청을 동시에 보냅니다. 메시지 하나가 요청 하나이고, 응답은 **끝나는 순서대로** 옵니다
+(오래 걸리는 질의가 뒤의 목록 조회를 막지 않음). 클라이언트가 붙인 `id`가 응답에 그대로 돌아오므로 그것으로
+짝을 맞춥니다. 브라우저 WebSocket은 헤더를 실을 수 없어서 토큰은 메시지의 `token`에 싣습니다.
+
+```json
+{ "id": "1", "task_type": "USER_QUERY", "session_id": null, "payload": { "query": "..." }, "token": "..." }
+```
+
+```json
+{ "id": "1", "task_type": "USER_QUERY", "status": "success", "result": { "...": "..." }, "error_message": null }
+```
+
+형식이 잘못된 메시지에는 `id: null`, `status: "error"`로 답합니다. 연결이 끊기면 그 연결에서 기다리던 요청은
+취소됩니다(작업 자체는 실행부에서 끝까지 돌고, 결과만 버려짐). 메시지 크기 상한은 `config.json`의
+`server.ws_max_size`(기본 100MB — 파일 업로드가 base64로 메시지 하나에 실려 옴)입니다.
+
+**POST `/api/task`** (기존 클라이언트·디버깅용)
 
 ```json
 {
@@ -194,7 +225,7 @@ gateway.run()    # 그다음 서버 기동
 
 ## TODO
 
-- [ ] 실제 TaskController 저장소와 Gateway를 함께 띄우는 연결 스크립트
+- [x] 실제 TaskController 저장소와 Gateway를 함께 띄우는 연결 스크립트 (RagSystem `main.py`, `gateway.connect()`)
 - [ ] `mock_taskcontroller.py` → 실제 TaskController로 교체 — 그 안에서 `task.token`을 검증하고
       `role` 기반 권한 체크(관리자 전용 API 등)를 하는 건 TaskController의 책임
 - [ ] `.env`를 이용한 비밀값(LLM API 키, DB 비밀번호 등) 관리
