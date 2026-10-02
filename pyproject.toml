@@ -13,7 +13,7 @@ dependencies = [
     "uvicorn==0.51.0",
     "pydantic==2.13.4",
     "python-dotenv==1.2.2",
-    "websockets==17.1",
+    "websockets>=13.0,<17.0",  # google-genai(RagSystem) 가 <17 을 요구한다
 ]
 
 [project.scripts]
