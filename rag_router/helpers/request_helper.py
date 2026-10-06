@@ -12,6 +12,7 @@ from rag_router.task.task import Task
 from rag_router.task.task_result import TaskResult
 from rag_router.dto.task_request import TaskRequest
 from rag_router.result_dispatcher import ResultDispatcher
+from rag_router.stream_dispatcher import OnStream, StreamDispatcher
 
 Encode = Callable[[Task], Any]
 
@@ -27,23 +28,31 @@ class RequestHandler:
         self._task_queue = task_queue
         self._dispatcher = dispatcher
         self._encode = encode or _same
+        self._streams: Optional[StreamDispatcher] = None
 
-    def configure(self, task_queue, dispatcher: ResultDispatcher, encode: Optional[Encode] = None) -> None:
+    def configure(
+        self, task_queue, dispatcher: ResultDispatcher, encode: Optional[Encode] = None,
+        streams: Optional[StreamDispatcher] = None,
+    ) -> None:
         """
         공유 큐(task_queue)와 결과 대기 장치(dispatcher)를 나중에 주입한다.
         encode는 Task를 task_queue가 받는 모양으로 바꾼다. ValueError를 던지면 큐에 넣지 않고
         그 메시지로 바로 실패 응답한다 (예: 등록되지 않은 task_type).
+        streams는 작업 중간 이벤트(스트리밍)를 job_id로 나눠주는 장치. 없으면 스트리밍을 쓰지 않는다.
         """
         self._task_queue = task_queue
         self._dispatcher = dispatcher
         self._encode = encode or _same
+        self._streams = streams
 
     async def submit(
-        self, req: TaskRequest, timeout_sec: float, token: Optional[str] = None
+        self, req: TaskRequest, timeout_sec: float, token: Optional[str] = None,
+        on_stream: Optional[OnStream] = None,
     ) -> tuple[str, Optional[TaskResult], bool]:
         """
         TaskRequest를 Task로 변환해 큐에 넣고, 결과가 도착할 때까지 대기한다.
         token은 HTTP Authorization 헤더(또는 WebSocket 메시지)에서 추출되어 별도로 전달된다.
+        on_stream을 주면 결과를 기다리는 동안 이 작업(job_id)의 중간 이벤트를 받는다.
 
         반환값: (job_id, result 또는 None(타임아웃 시), timed_out 여부)
         """
@@ -62,6 +71,9 @@ class RequestHandler:
             return job_id, TaskResult(job_id, False, error=str(e)), False
 
         future = self._dispatcher.register(job_id)
+        streaming = on_stream is not None and self._streams is not None
+        if streaming:
+            self._streams.register(job_id, on_stream)   # 큐에 넣기 전에 — 첫 이벤트를 놓치지 않게
         self._task_queue.put(item)
 
         try:
@@ -71,3 +83,5 @@ class RequestHandler:
             return job_id, None, True
         finally:
             self._dispatcher.unregister(job_id)
+            if streaming:
+                self._streams.unregister(job_id)

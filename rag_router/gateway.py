@@ -6,6 +6,7 @@
 
 통로는 두 가지이고 처리는 같다.
 - WebSocket /api/ws : 기본 통로. 연결 하나로 여러 요청을 동시에 보내고, 응답은 끝나는 순서대로 온다.
+  작업이 도는 동안 중간 메시지(WsStream: 생성 중인 답변 조각, 진행 단계)도 같은 id로 보낸다.
 - HTTP POST /api/task : 기존 클라이언트·디버깅(curl)용으로 남겨둔다.
 
 .env 로딩, config.json 로딩, 로깅 설정은 여기(모듈 최상위)에서 1회만 수행한다.
@@ -29,13 +30,14 @@ from pydantic import ValidationError
 
 from rag_router.dto.task_request import TaskRequest
 from rag_router.dto.task_response import TaskResponse
-from rag_router.dto.ws_message import WsRequest, WsResponse
+from rag_router.dto.ws_message import WsRequest, WsResponse, WsStream
 from rag_router.helpers.config_helper import ConfigHelper
 from rag_router.helpers.log_helper import LogHelper
 from rag_router.helpers.request_helper import Encode, RequestHandler
 from rag_router.helpers.response_helper import ResponseHandler
 from rag_router.result_dispatcher import Decode, ResultDispatcher
 from rag_router.shared_queues import SharedQueues
+from rag_router.stream_dispatcher import StreamDispatcher
 
 config = ConfigHelper().load()
 
@@ -60,6 +62,7 @@ class Gateway:
 
         self._encode: Optional[Encode] = None
         self._decode: Optional[Decode] = None
+        self._stream_queue = None
 
         self.request_handler = RequestHandler()
         self.response_handler = ResponseHandler()
@@ -77,15 +80,19 @@ class Gateway:
         )
 
     def connect(
-        self, task_queue, result_queue, *, encode: Optional[Encode] = None, decode: Optional[Decode] = None
+        self, task_queue, result_queue, *, encode: Optional[Encode] = None, decode: Optional[Decode] = None,
+        stream_queue=None,
     ) -> None:
         """
         TaskController 입력 큐와 TaskExecutor 결과 큐를 직접 연결한다. run() 전에 불러야 한다.
         - encode: Task -> task_queue에 넣을 값. ValueError면 큐에 넣지 않고 바로 실패 응답
         - decode: result_queue에서 꺼낸 값 -> TaskResult. None이면 버린다
+        - stream_queue: TaskExecutor가 작업 중에 (job_id, event)를 넣는 큐. 주면 WebSocket
+          요청에 그 이벤트를 WsStream으로 흘려보낸다. 없으면 최종 응답만 보낸다
         """
         SharedQueues.bind(task_queue, result_queue)
         self._encode, self._decode = encode, decode
+        self._stream_queue = stream_queue
 
     def run(self) -> None:
         """rag-router 콘솔 스크립트/직접 실행에서 사용. config.json의 server.host/port를 따른다."""
@@ -103,14 +110,22 @@ class Gateway:
     async def on_startup(self) -> None:
         task_queue, result_queue = SharedQueues.get_queues()
 
+        loop = asyncio.get_running_loop()
         dispatcher = ResultDispatcher(result_queue, self._decode)
-        dispatcher.start(asyncio.get_running_loop())
+        dispatcher.start(loop)
 
-        self.request_handler.configure(task_queue, dispatcher, self._encode)
-        logger.info("큐 연결 완료")
+        streams = None
+        if self._stream_queue is not None:
+            streams = StreamDispatcher(self._stream_queue)
+            streams.start(loop)
 
-    async def _process(self, req: TaskRequest, token: Optional[str]) -> TaskResponse:
-        job_id, result, timed_out = await self.request_handler.submit(req, self.TIMEOUT_SEC, token=token)
+        self.request_handler.configure(task_queue, dispatcher, self._encode, streams)
+        logger.info("큐 연결 완료 (스트리밍 %s)", "사용" if streams else "안 씀")
+
+    async def _process(self, req: TaskRequest, token: Optional[str], on_stream=None) -> TaskResponse:
+        job_id, result, timed_out = await self.request_handler.submit(
+            req, self.TIMEOUT_SEC, token=token, on_stream=on_stream
+        )
         response = self.response_handler.build(req.task_type, result, timed_out, self.TIMEOUT_SEC)
 
         if response.status == "success":
@@ -139,7 +154,21 @@ class Gateway:
                 await ws.send_text(response.model_dump_json())
 
         async def reply(req: WsRequest) -> None:
-            response = await self._process(req, req.token)
+            # 중간 이벤트는 이벤트루프 스레드에서 불린다. 보내기는 async라 작업으로 띄우고,
+            # send_lock이 먼저 온 순서대로 내보낸다. 최종 응답 뒤에 늦게 도착한 조각은
+            # 클라이언트가 버린다(이미 끝난 요청).
+            async def push(event: dict) -> None:
+                try:
+                    await send(WsStream(id=req.id, task_type=req.task_type, event=event))
+                except Exception:  # noqa: BLE001 — 연결이 끊겼으면 조각은 버린다. 최종 응답 쪽이 정리한다
+                    pass
+
+            def on_stream(event: dict) -> None:
+                job = asyncio.create_task(push(event))
+                running.add(job)
+                job.add_done_callback(running.discard)
+
+            response = await self._process(req, req.token, on_stream)
             await send(WsResponse(id=req.id, **response.model_dump()))
 
         try:
