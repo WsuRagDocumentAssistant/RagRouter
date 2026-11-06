@@ -53,6 +53,9 @@ def _bearer(authorization: Optional[str]) -> Optional[str]:
 
 class Gateway:
     TIMEOUT_SEC = 60.0  # 전체 task_type 공통 타임아웃
+    # 웹소켓 연결 하나가 동시에 기다릴 수 있는 요청 수. 넘는 요청은 바로 거절한다 —
+    # 한 연결이 요청을 쏟아부어 다른 사용자의 몫(RequestHandler 전체 상한)을 다 차지하지 못하게.
+    MAX_PER_CONNECTION = int(os.environ.get("RAG_MAX_REQUESTS_PER_CONNECTION", "16"))
 
     def __init__(self):
         self.host = os.environ.get("HOST") or config.get("server", "host", default="0.0.0.0")
@@ -148,6 +151,7 @@ class Gateway:
         await ws.accept()
         send_lock = asyncio.Lock()   # 여러 작업이 동시에 보내도 프레임이 섞이지 않게
         running: set[asyncio.Task] = set()
+        replies: set[asyncio.Task] = set()   # 결과를 기다리는 요청(중간 이벤트 전송 작업은 빼고 센다)
 
         async def send(response: WsResponse) -> None:
             async with send_lock:
@@ -179,9 +183,15 @@ class Gateway:
                 except ValidationError as e:
                     await send(WsResponse(task_type="", status="error", error_message=f"잘못된 요청 형식입니다: {e.errors()[0]['msg']}"))
                     continue
+                if len(replies) >= self.MAX_PER_CONNECTION:
+                    await send(WsResponse(id=req.id, task_type=req.task_type, status="error",
+                                          error_message="동시에 보낸 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."))
+                    continue
                 job = asyncio.create_task(reply(req))
                 running.add(job)
+                replies.add(job)
                 job.add_done_callback(running.discard)
+                job.add_done_callback(replies.discard)
         except WebSocketDisconnect:
             pass
         finally:

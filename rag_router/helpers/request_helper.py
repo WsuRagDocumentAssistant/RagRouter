@@ -4,6 +4,7 @@
 - RequestHandler: TaskRequest를 Task로 변환해 큐에 적재하고, 결과가 올 때까지 대기하는 책임
 - TaskRequest DTO는 dto/task_request.py 로 분리되어 있다.
 """
+import os
 import uuid
 import asyncio
 from typing import Any, Callable, Optional
@@ -15,6 +16,12 @@ from rag_router.result_dispatcher import ResultDispatcher
 from rag_router.stream_dispatcher import OnStream, StreamDispatcher
 
 Encode = Callable[[Task], Any]
+
+# 결과를 기다리는 요청 수 상한(전체). 넘으면 큐에 넣지 않고 바로 거절한다 — 예전에는 요청을 얼마든
+# 받아 큐와 실행부 스레드풀 대기열에 쌓아, 몰아치는 요청으로 메모리·작업이 끝없이 밀렸다
+# (보안 점검 resource-exhaustion.unbounded-task-backlog).
+MAX_PENDING = int(os.environ.get("RAG_MAX_PENDING_REQUESTS", "64"))
+BUSY = "요청이 많아 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
 
 def _same(task: Task) -> Task:
@@ -29,6 +36,7 @@ class RequestHandler:
         self._dispatcher = dispatcher
         self._encode = encode or _same
         self._streams: Optional[StreamDispatcher] = None
+        self._pending = 0            # 결과를 기다리는 요청 수 (이벤트 루프 안에서만 바뀐다)
 
     def configure(
         self, task_queue, dispatcher: ResultDispatcher, encode: Optional[Encode] = None,
@@ -69,7 +77,10 @@ class RequestHandler:
             item = self._encode(task)
         except ValueError as e:
             return job_id, TaskResult(job_id, False, error=str(e)), False
+        if self._pending >= MAX_PENDING:
+            return job_id, TaskResult(job_id, False, error=BUSY), False
 
+        self._pending += 1
         future = self._dispatcher.register(job_id)
         streaming = on_stream is not None and self._streams is not None
         if streaming:
@@ -82,6 +93,7 @@ class RequestHandler:
         except asyncio.TimeoutError:
             return job_id, None, True
         finally:
+            self._pending -= 1
             self._dispatcher.unregister(job_id)
             if streaming:
                 self._streams.unregister(job_id)
